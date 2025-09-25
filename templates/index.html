@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>NextGen Delivery Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">⟲</div>
+      <div class="title">
+        <h1>NextGen Delivery</h1>
+        <p class="subtitle">Smarter deliveries · Friendly UI</p>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button id="btnAddDelivery" class="btn primary">➕ Add Delivery</button>
+      <button id="btnAddDriver" class="btn ghost">👨‍✈️ Add Driver</button>
+      <div id="notifBadge" class="notif-badge">0</div>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="left-panel">
+      <div class="controls-row">
+        <input id="searchInput" placeholder="Search by customer, product or driver..." class="search" />
+        <select id="statusFilter" class="select">
+          <option value="">All statuses</option>
+          <option value="Pending">Pending</option>
+          <option value="Picked Up">Picked Up</option>
+          <option value="In Transit">In Transit</option>
+          <option value="Delivered">Delivered</option>
+          <option value="Cancelled">Cancelled</option>
+          <option value="Failed">Failed</option>
+        </select>
+      </div>
+
+      <div id="cardsGrid" class="cards-grid">
+        <!-- JS will render delivery cards here -->
+      </div>
+    </section>
+
+    <aside class="right-panel">
+      <div class="panel-head">
+        <h3>Notifications</h3>
+        <button id="clearNotifs" class="btn tiny ghost">Clear</button>
+      </div>
+      <div id="notifList" class="notif-list">
+        <!-- JS renders notifications -->
+      </div>
+    </aside>
+  </main>
+
+  <!-- Modal skeletons (JS will fill and show) -->
+  <div id="modalOverlay" class="modal-overlay hidden"></div>
+  <div id="modal" class="modal hidden" role="dialog" aria-hidden="true"></div>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+  <script>
+    // Preloaded server-rendered objects (optional) not used — app.js will fetch fresh data
+  </script>
+</body>
+</html>

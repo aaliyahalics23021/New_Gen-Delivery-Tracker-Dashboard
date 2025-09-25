@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Add Driver — NextGen</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar small">
+    <div class="brand"><div class="logo">👤</div><div class="title"><h1>Add Driver</h1></div></div>
+    <div class="header-actions">
+      <a href="{{ url_for('index') }}" class="btn ghost">← Back</a>
+    </div>
+  </header>
+
+  <main class="centered">
+    <form id="driverForm" class="form-card">
+      <h2>Add New Driver</h2>
+      <label class="form-row"><span>Name</span><input name="name" required placeholder="Full name"></label>
+      <label class="form-row"><span>Contact</span><input name="contact" placeholder="Phone or email"></label>
+      <div class="form-actions">
+        <button type="submit" class="btn primary">Save Driver</button>
+        <a href="{{ url_for('index') }}" class="btn ghost">Cancel</a>
+      </div>
+    </form>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

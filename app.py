@@ -1,136 +1,206 @@
-from flask import Flask, render_template, request, redirect, flash
+from flask import Flask, render_template, request, jsonify, redirect, url_for
 import sqlite3
 import os
-from datetime import datetime, timedelta
-import random
-import string
+from datetime import datetime
+
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+DB_PATH = os.path.join(BASE_DIR, "deliveries.db")
 
 app = Flask(__name__)
-app.secret_key = "secret123"
-DATABASE = "tracker.db"
+app.config['DATABASE'] = DB_PATH
 
-# ---------------- Database connection ----------------
-def get_db_connection():
-    conn = sqlite3.connect(DATABASE)
+# --- DB helpers ---
+def get_db():
+    conn = sqlite3.connect(app.config['DATABASE'])
     conn.row_factory = sqlite3.Row
     return conn
 
-# ---------------- Initialize database ----------------
 def init_db():
-    if not os.path.exists(DATABASE):
-        conn = get_db_connection()
-        conn.execute('''CREATE TABLE deliveries (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        order_id INTEGER,
-                        tracking_id TEXT,
-                        customer TEXT,
-                        product TEXT,
-                        amount_paid REAL,
-                        status TEXT DEFAULT 'Pending',
-                        driver_name TEXT,
-                        order_date TEXT,
-                        estimated_delivery TEXT
-                        )''')
-        conn.execute('''CREATE TABLE drivers (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT,
-                        phone TEXT
-                        )''')
-        # Add predefined drivers
-        predefined_drivers = [
-            ("Vinay", "9876543210"),
-            ("Aman", "9123456780"),
-            ("Akshad", "9988776655"),
-            ("Amrit", "9012345678"),
-            ("Soham", "9234567890")
-        ]
-        conn.executemany("INSERT INTO drivers (name, phone) VALUES (?,?)", predefined_drivers)
-        conn.commit()
-        conn.close()
+    if not os.path.exists(app.config['DATABASE']):
+        open(app.config['DATABASE'], 'a').close()
+    conn = get_db()
+    sql_path = os.path.join(BASE_DIR, 'schema.sql')
+    if os.path.exists(sql_path):
+        with open(sql_path, 'r', encoding='utf-8') as f:
+            conn.executescript(f.read())
+    conn.commit()
+    conn.close()
 
-# ---------------- Routes ----------------
-@app.route("/")
+# --- Notification utility ---
+def log_notification(evt_type, entity, entity_id, message, from_status=None, to_status=None):
+    ts = datetime.utcnow().isoformat() + "Z"
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO notifications (evt_type, entity, entity_id, message, from_status, to_status, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (evt_type, entity, entity_id, message, from_status, to_status, ts)
+    )
+    conn.commit()
+    conn.close()
+
+# --- Routes ---
+@app.route('/')
 def index():
-    return redirect("/dashboard")
-
-@app.route("/dashboard")
-def dashboard():
-    conn = get_db_connection()
-    deliveries = conn.execute("SELECT * FROM deliveries ORDER BY id DESC").fetchall()
-    drivers = conn.execute("SELECT * FROM drivers").fetchall()
-    notifications = conn.execute("SELECT * FROM deliveries ORDER BY id DESC LIMIT 5").fetchall()
+    conn = get_db()
+    cur = conn.cursor()
+    deliveries = cur.execute("""
+        SELECT d.*, drv.name as driver_name
+        FROM deliveries d
+        LEFT JOIN drivers drv ON d.driver_id = drv.id
+        ORDER BY d.updated_at DESC, d.created_at DESC
+    """).fetchall()
+    drivers = cur.execute("SELECT * FROM drivers ORDER BY created_at DESC").fetchall()
+    notifications = cur.execute("SELECT * FROM notifications ORDER BY ts DESC LIMIT 50").fetchall()
     conn.close()
-    return render_template("dashboard.html", deliveries=deliveries, drivers=drivers, notifications=notifications)
+    return render_template('index.html', deliveries=deliveries, drivers=drivers, notifications=notifications)
 
-@app.route("/add_delivery", methods=["GET", "POST"])
-def add_delivery():
-    conn = get_db_connection()
-    drivers = conn.execute("SELECT * FROM drivers").fetchall()
-    if request.method == "POST":
-        customer = request.form.get("customer")
-        product = request.form.get("product")
-        amount = float(request.form.get("amount"))
-        driver = request.form.get("driver")
+# API endpoints used by JS (and form actions)
+@app.route('/api/drivers', methods=['POST'])
+def api_add_driver():
+    data = request.form
+    name = data.get('name','').strip()
+    contact = data.get('contact','').strip()
+    if not name:
+        return jsonify({'success': False, 'error': 'Driver name required'}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO drivers (name, contact) VALUES (?, ?)", (name, contact))
+    driver_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    log_notification('driver_added','driver', driver_id, f"Driver added: {name}")
+    return jsonify({'success': True, 'driver': {'id': driver_id, 'name': name, 'contact': contact}})
 
-        order_id = random.randint(100000, 999999)
-        tracking_id = "TRK" + "".join(random.choices(string.digits, k=6))
-        order_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        estimated_delivery = (datetime.now() + timedelta(days=random.randint(2,10))).strftime("%Y-%m-%d %H:%M:%S")
-        status = "Pending"
+@app.route('/api/deliveries', methods=['POST'])
+def api_add_delivery():
+    data = request.form
+    customer_name = data.get('customer_name','').strip()
+    customer_contact = data.get('customer_contact','').strip()
+    product = data.get('product','').strip()
+    price = data.get('price','0').strip()
+    driver_id = data.get('driver_id') or None
+    try:
+        price_val = float(price)
+    except:
+        price_val = 0.0
+    if not customer_name or not product:
+        return jsonify({'success':False, 'error':'Missing fields'}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO deliveries (customer_name, customer_contact, product, price, driver_id, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))",
+        (customer_name, customer_contact, product, price_val, driver_id, 'Pending')
+    )
+    delivery_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    log_notification('delivery_added','delivery', delivery_id, f"Delivery added: {customer_name} — {product}")
+    return jsonify({'success': True, 'delivery_id': delivery_id})
 
-        conn.execute(
-            "INSERT INTO deliveries (order_id, tracking_id, customer, product, amount_paid, status, driver_name, order_date, estimated_delivery) VALUES (?,?,?,?,?,?,?,?,?)",
-            (order_id, tracking_id, customer, product, amount, status, driver, order_date, estimated_delivery)
-        )
-        conn.commit()
+@app.route('/api/delete_driver', methods=['POST'])
+def api_delete_driver():
+    driver_id = request.form.get('id')
+    if not driver_id:
+        return jsonify({'success': False, 'error':'id required'}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM drivers WHERE id = ?", (driver_id,))
+    row = cur.fetchone()
+    if not row:
         conn.close()
-        flash(f"New delivery created: {order_id}")
-        return redirect("/dashboard")
+        return jsonify({'success': False, 'error': 'Driver not found'}), 404
+    name = row['name']
+    cur.execute("DELETE FROM drivers WHERE id = ?", (driver_id,))
+    conn.commit()
     conn.close()
-    return render_template("add_delivery.html", drivers=drivers)
+    log_notification('driver_deleted','driver', driver_id, f"Driver removed: {name}")
+    return jsonify({'success': True, 'removed': name})
 
-@app.route("/add_driver", methods=["GET","POST"])
-def add_driver():
-    if request.method=="POST":
-        name = request.form.get("name")
-        phone = request.form.get("phone")
-        conn = get_db_connection()
-        conn.execute("INSERT INTO drivers (name, phone) VALUES (?,?)", (name, phone))
-        conn.commit()
+@app.route('/api/delete_delivery', methods=['POST'])
+def api_delete_delivery():
+    delivery_id = request.form.get('id')
+    if not delivery_id:
+        return jsonify({'success': False, 'error':'id required'}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT customer_name, product FROM deliveries WHERE id = ?", (delivery_id,))
+    row = cur.fetchone()
+    if not row:
         conn.close()
-        flash(f"New driver added: {name}")
-        return redirect("/dashboard")
-    return render_template("add_driver.html")
-
-@app.route("/update_status/<int:id>", methods=["POST"])
-def update_status(id):
-    new_status = request.form.get("status")
-    conn = get_db_connection()
-    old = conn.execute("SELECT customer, status FROM deliveries WHERE id=?", (id,)).fetchone()
-    conn.execute("UPDATE deliveries SET status=? WHERE id=?", (new_status, id))
+        return jsonify({'success': False, 'error': 'Delivery not found'}), 404
+    customer_name = row['customer_name']
+    product = row['product']
+    cur.execute("DELETE FROM deliveries WHERE id = ?", (delivery_id,))
     conn.commit()
     conn.close()
-    flash(f"Order #{id} ({old['customer']}) status updated from {old['status']} → {new_status} at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    return redirect("/dashboard")
+    log_notification('delivery_deleted','delivery', delivery_id, f"Delivery removed: {customer_name} — {product}")
+    return jsonify({'success': True, 'removed': customer_name})
 
-@app.route("/delete/<int:id>", methods=["POST"])
-def delete_delivery(id):
-    conn = get_db_connection()
-    conn.execute("DELETE FROM deliveries WHERE id=?", (id,))
+@app.route('/api/update_status', methods=['POST'])
+def api_update_status():
+    data = request.get_json() or {}
+    delivery_id = data.get('id')
+    new_status = data.get('status')
+    if not delivery_id or new_status is None:
+        return jsonify({'success': False, 'error': 'missing'}), 400
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT status, customer_name FROM deliveries WHERE id = ?", (delivery_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return jsonify({'success': False, 'error': 'delivery not found'}), 404
+    old_status = row['status']
+    customer_name = row['customer_name']
+    cur.execute("UPDATE deliveries SET status = ?, updated_at = datetime('now') WHERE id = ?", (new_status, delivery_id))
     conn.commit()
     conn.close()
-    flash(f"Delivery #{id} deleted")
-    return redirect("/dashboard")
+    log_notification('status_changed','delivery', delivery_id, f"Status for {customer_name}: {old_status} → {new_status}", from_status=old_status, to_status=new_status)
+    return jsonify({'success': True, 'from': old_status, 'to': new_status, 'customer_name': customer_name, 'when': datetime.utcnow().isoformat() + "Z"})
 
-@app.route("/delete_driver/<int:id>", methods=["POST"])
-def delete_driver(id):
-    conn = get_db_connection()
-    conn.execute("DELETE FROM drivers WHERE id=?", (id,))
-    conn.commit()
+# Read endpoints for JS
+@app.route('/api/get_deliveries')
+def api_get_deliveries():
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute("""
+        SELECT d.*, drv.name as driver_name
+        FROM deliveries d
+        LEFT JOIN drivers drv ON d.driver_id = drv.id
+        ORDER BY d.updated_at DESC, d.created_at DESC
+    """).fetchall()
+    out = [dict(r) for r in rows]
     conn.close()
-    flash(f"Driver deleted")
-    return redirect("/dashboard")
+    return jsonify(out)
 
-if __name__ == "__main__":
+@app.route('/api/get_notifications')
+def api_get_notifications():
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute("SELECT * FROM notifications ORDER BY ts DESC LIMIT 100").fetchall()
+    out = [dict(r) for r in rows]
+    conn.close()
+    return jsonify(out)
+
+@app.route('/api/get_drivers')
+def api_get_drivers():
+    conn = get_db()
+    cur = conn.cursor()
+    rows = cur.execute("SELECT * FROM drivers ORDER BY created_at DESC").fetchall()
+    out = [dict(r) for r in rows]
+    conn.close()
+    return jsonify(out)
+
+# Simple pages that use the modern UI but the forms use JS calls
+@app.route('/add_driver')
+def add_driver_page():
+    return render_template('add_driver.html')
+
+@app.route('/add_delivery')
+def add_delivery_page():
+    return render_template('add_delivery.html')
+
+# --- Start ---
+if __name__ == '__main__':
     init_db()
     app.run(debug=True)
